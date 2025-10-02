@@ -49,9 +49,9 @@ The front and back of the left joystick controls the movement speed of the robot
 The left and right of the left joystick controls the movement speed of the robot in the y direction
 The left and right of the right joystick controls the movement speed of the robot's yaw angle -->
 
-#### 4.4 Exit control
+<!-- #### 4.4 Exit control
 
 In motion control mode, press the `select` button on the remote control, the robot will enter the damping mode and fall down, and the program will exit. Or use `ctrl+c` in the terminal to close the program.
 
 
-## Video tutorial -->
+## Video tutorial --> -->
