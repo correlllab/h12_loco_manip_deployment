@@ -1,0 +1,22 @@
+name: h12_real
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - cmake        # needed for building cyclonedds
+  - pip:
+      - numpy<2,>=1.23
+      - matplotlib==3.6.3
+      - rerun-sdk==0.18.1
+      - pygame
+      - pillow==9.5.0
+      - pydantic==1.10.9
+      - pyarrow==14.0.2
+      # - onnxruntime
+      # - wandb
+      - ipdb
+      - pydelatin==0.2.8
+      - pyfqmr==0.2.1
+      # torch should be installed manually with the correct CUDA version
