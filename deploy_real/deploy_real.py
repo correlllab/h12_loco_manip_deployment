@@ -1,5 +1,3 @@
-# from legged_gym import LEGGED_GYM_ROOT_DIR
-
 import os
 import pickle
 import pygame
@@ -30,6 +28,9 @@ from config import Config
 ######################################################################
 ## Input & Plotting Configuration
 ######################################################################
+
+import rerun as rr 
+
 
 # Keyboard state tracking for pygame
 key_states = {
@@ -237,8 +238,9 @@ class Controller:
 
     def run(self):
         self.counter += 1
-        t_start = time.time()  # <-- ADD THIS LINE
+        t_start = time.time() 
 
+        # --- 1. Handle User Input ---
         input_cmd = {
             "x": self.cmd[0], "y": self.cmd[1], "yaw": self.cmd[2], "height": self.height_cmd
         }
@@ -247,13 +249,11 @@ class Controller:
         # Update internal commands from the returned dictionary
         self.cmd = np.array([input_cmd["x"], input_cmd["y"], input_cmd["yaw"]])
         self.height_cmd = input_cmd["height"]
-        
+    
+        #print("current height: ",self.height_cmd)
 
-        print("current height: ",self.height_cmd)
-
-
+        # --- 2. Get State from Robot ---
         full_default_angles = np.concatenate((self.config.default_angles, self.config.arm_waist_target), axis=0)
-
         # Get the current joint position and velocity
         all_motor_indices = self.config.leg_joint2motor_idx + self.config.arm_waist_joint2motor_idx
 
@@ -273,52 +273,29 @@ class Controller:
             waist_yaw_omega = self.low_state.motor_state[self.config.arm_waist_joint2motor_idx[0]].dq
             quat, ang_vel = transform_imu_data(waist_yaw=waist_yaw, waist_yaw_omega=waist_yaw_omega, imu_quat=quat, imu_omega=ang_vel)
 
-        # create observation
+        # --- 3. Compute Observation ---
         gravity_orientation = get_gravity_orientation(quat)
-
-        num_dofs = self.config.num_dofs   # 27 (qj/dqj size)
-        num_actions = self.config.num_actions # 12 (Policy action size, usually legs)
         
         qj_obs = self.qj.copy()
         dqj_obs = self.dqj.copy()
         
         qj_obs = (qj_obs - full_default_angles) * self.config.dof_pos_scale
         dqj_obs = dqj_obs * self.config.dof_vel_scale
-        ang_vel = ang_vel * self.config.ang_vel_scale
+        ang_vel_scaled = ang_vel * self.config.ang_vel_scale
 
 
         # Single observation size = 3 + 1 + 3 + 3 + 27 + 27 + 12 = 76 (assuming 12 actions)
-        single_obs_dim = 3 + 1 + 3 + 3 + num_dofs + num_dofs + num_actions
+        single_obs_dim = 3 + 1 + 3 + 3 + self.config.num_dofs + self.config.num_dofs + self.config.num_actions
         single_obs = np.zeros(single_obs_dim, dtype=np.float32)
-        
-        current_idx = 0
-        single_obs[current_idx : current_idx + 3] = self.cmd
-        current_idx += 3
-        
-        single_obs[current_idx] = self.height_cmd
-        current_idx += 1
-
-        # 2. omega_scaled (3 values)
-        single_obs[current_idx : current_idx + 3] = ang_vel
-        current_idx += 3
-
-        # 3. grav_orientation (3 values)
-        single_obs[current_idx : current_idx + 3] = gravity_orientation
-        current_idx += 3
-        
-        # 4. qj_scaled (27 values)
-        single_obs[current_idx : current_idx + num_dofs] = qj_obs
-        current_idx += num_dofs
-        
-        # 5. dqj_scaled (27 values)
-        single_obs[current_idx : current_idx + num_dofs] = dqj_obs
-        current_idx += num_dofs
+        single_obs[0:3] = self.cmd
+        single_obs[3] = self.height_cmd
+        single_obs[4:7] = ang_vel_scaled
+        single_obs[7:10] = gravity_orientation
+        single_obs[10:10+self.config.num_dofs] = qj_obs
+        single_obs[10+self.config.num_dofs:10+2*self.config.num_dofs] = dqj_obs
+        single_obs[10+2*self.config.num_dofs:] = self.action
 
 
-         # 6. last_action (12 values)
-        single_obs[current_idx : current_idx + num_actions] = self.action
-        # current_idx += num_actions # Not strictly needed if this is the end
-        
         # --- 4. HISTORY & STACK ---
         self.obs_history.append(single_obs.copy())
 
@@ -344,22 +321,31 @@ class Controller:
         
         target_dof_pos = self.config.default_angles + clipped_action
 
-
-
-        # --- DATA LOGGING ADDITIONS ---
+        # ------------------------------------------------------------------
+        # --- LIVE DATA LOGGING WITH RERUN ---
+        # ------------------------------------------------------------------
         current_time = time.time() - self.start_time
-        self.t_hist.append(current_time)
-        self.qpos_hist.append(self.qj.copy()) # Full qpos (27 DOFs)
-        self.dqpos_hist.append(self.dqj.copy()) # Full dqpos (27 DOFs)
-        full_target_dof = np.concatenate((target_dof_pos, self.config.arm_waist_target), axis=0)
-        self.target_dof_hist.append(full_target_dof) 
-        # -----------------------------
+        rr.set_time_seconds("real_time", current_time)
+
+        # Log Commands
+        rr.log("commands/linear_x", rr.Scalar(self.cmd[0]))
+        rr.log("commands/linear_y", rr.Scalar(self.cmd[1]))
+        rr.log("commands/angular_yaw", rr.Scalar(self.cmd[2]))
+        rr.log("commands/height", rr.Scalar(self.height_cmd))
+
+        # Log Root Body State
+        rr.log("root_state/angular_velocity", rr.Vec3D(ang_vel_raw))
+        rr.log("root_state/gravity_orientation", rr.Vec3D(gravity_orientation)) # Shows base tilt
+
+        # Log Leg Joint Data (12 joints)
+        for i, name in enumerate(JOINT_NAMES_PLOT):
+            rr.log(f"joints/legs/{name}/position/Actual", rr.Scalar(self.qj[i]))
+            rr.log(f"joints/legs/{name}/position/Target", rr.Scalar(target_dof_pos[i]))
+            rr.log(f"joints/legs/{name}/velocity", rr.Scalar(self.dqj[i]))
+        # ------------------------------------------------------------------
 
 
-        # if self.counter <= 5:
-        #     print(f"[{self.counter}] target dof: {target_dof_pos}")
-            
-        # Build low cmd
+        # --- 5. Send Commands to Robot ---
         for i in range(len(self.config.leg_joint2motor_idx)):
             motor_idx = self.config.leg_joint2motor_idx[i]
             self.low_cmd.motor_cmd[motor_idx].q = target_dof_pos[i]
@@ -380,7 +366,8 @@ class Controller:
             print(f"[{self.counter}] obs_history: {self.obs_history}")
             
         self.send_cmd(self.low_cmd)
-      
+
+        # --- 6. Maintain Control Frequency ---
         t_elapsed = time.time() - t_start
         time_to_sleep = self.config.control_dt - t_elapsed
         if time_to_sleep > 0:
@@ -388,7 +375,6 @@ class Controller:
 
         # Now, measure the time of the ENTIRE cycle, including the sleep
         t_full_cycle = time.time() - t_start
-        
         # Print the full cycle time and the corresponding fixed frequency (50 Hz)
         print(f"Full Cycle Time: {t_full_cycle:.5f}s (Target: {self.config.control_dt:.3f}s), Frequency: {1.0/t_full_cycle:.1f} Hz")
 
@@ -400,6 +386,9 @@ if __name__ == "__main__":
     parser.add_argument("net", type=str, help="network interface")
     parser.add_argument("config", type=str, help="config file name in the configs folder", default="h1_2.yaml")
     args = parser.parse_args()
+
+
+    rr.init("h1_real_deployment", spawn=True) 
 
     config_path = f"/home/niraj/isaac_projects/h12_loco_manipulation/h12_real/deploy_real/configs/{args.config}"
     config = Config(config_path)
@@ -433,38 +422,3 @@ if __name__ == "__main__":
     create_damping_cmd(controller.low_cmd)
     controller.send_cmd(controller.low_cmd)
     print("Exit")
-
-
-    # ----------------------------------------------------------------------------------
-    # --- POST-EXECUTION PLOTTING ---
-    # ----------------------------------------------------------------------------------
-
-        # Ensure logs directory exists
-    log_dir = "logs/real"
-    os.makedirs(log_dir, exist_ok=True)
-    
-    qpos_hist_arr = np.array(controller.qpos_hist)
-    dqpos_hist_arr = np.array(controller.dqpos_hist)
-    target_dof_hist_arr = np.array(controller.target_dof_hist)
-    t_hist_arr = np.array(controller.t_hist)
-
-    if not t_hist_arr.size:
-        print("No data logged, skipping plots.")
-        sys.exit() # Exit after cleanup and message if no data
-
-    # Plot qpos vs. target_dof_pos
-    plot_qpos_vs_action(
-        t_hist_arr, 
-        qpos_hist_arr, 
-        target_dof_hist_arr, 
-        JOINT_NAMES_PLOT, 
-        os.path.join(log_dir, "qpos_vs_target.png")
-    )
-    
-    # Plot dqpos
-    plot_dqpos(
-        t_hist_arr, 
-        dqpos_hist_arr, 
-        JOINT_NAMES_PLOT, 
-        os.path.join(log_dir, "dqpos.png")
-    )
