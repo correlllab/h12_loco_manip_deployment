@@ -37,13 +37,7 @@ cd unitree_sdk2_python
 pip install -e .
 ```
 
-
-
-
-
-
-
-# 1. h12_loco_manip_deployment
+# 2. h12_loco_manip_deployment
 
 ```bash
 cd deploy_real
